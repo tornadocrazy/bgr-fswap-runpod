@@ -127,6 +127,19 @@ def _bgremove(pil, feather=0.8, erode=1):
     return out
 
 
+def _detect_face_box(pil_rgba):
+    """insightface bbox of the (largest) face in the final image. Returns the box in
+    THIS image's pixel coords so the backend can scale directly — no server-side ML."""
+    rgb = pil_rgba.convert("RGB")
+    bgr = cv2.cvtColor(np.array(rgb), cv2.COLOR_RGB2BGR)
+    faces = _face.get(bgr)
+    if not faces:
+        return None
+    f = max(faces, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))
+    x1, y1, x2, y2 = [int(v) for v in f.bbox]
+    return {"left": x1, "top": y1, "width": x2 - x1, "height": y2 - y1}
+
+
 def handler(job):
     try:
         inp = job.get("input", {}) or {}
@@ -144,8 +157,18 @@ def handler(job):
         if op in ("bgremove", "both"):
             img = _bgremove(img, float(inp.get("feather", 0.8)), int(inp.get("erode", 1)))
             had_alpha = True
+            # trim transparent border on the GPU side so the returned cutout's top row
+            # is the head top (backend anchors head edge at headTopY) — saves a server op.
+            alpha = img.getchannel("A")
+            bbox = alpha.getbbox()
+            if bbox:
+                img = img.crop(bbox)
 
-        return {"image": _pil_to_b64(img), "format": "png", "had_alpha": had_alpha}
+        # insightface bbox of the final user face, in the RETURNED image's coords, so
+        # the backend scales (refFaceHeight / face.height) without running getFaceBox.
+        face = _detect_face_box(img)
+
+        return {"image": _pil_to_b64(img), "format": "png", "had_alpha": had_alpha, "face": face}
     except Exception as e:
         import traceback
         return {"error": str(e), "trace": traceback.format_exc()[-800:]}
