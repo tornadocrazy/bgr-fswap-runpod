@@ -1,0 +1,114 @@
+name: Mirror models to HF
+
+# Populates techwavelaps/bgr-fswap-models with every model the worker needs,
+# so the RunPod image can ship WITHOUT baked models and pull them from RunPod's
+# HF Model Cache at boot instead. Runs on GitHub's runner (fast uplink) — not
+# locally. Manual trigger only; re-running is idempotent (skips files already
+# present in the target repo).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install huggingface_hub + hf_transfer
+        run: pip install --upgrade huggingface_hub hf_transfer
+
+      - name: Mirror models into techwavelaps/bgr-fswap-models
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_HUB_ENABLE_HF_TRANSFER: "1"
+        run: |
+          python <<'PY'
+          import os, shutil, zipfile, urllib.request
+          from huggingface_hub import (hf_hub_download, snapshot_download,
+                                       upload_file, list_repo_files, login)
+
+          login(token=os.environ["HF_TOKEN"])
+          TARGET = "techwavelaps/bgr-fswap-models"
+          existing = set(list_repo_files(TARGET))
+          print("Existing in target:", sorted(existing))
+
+          tmp = "/tmp/hf_mirror"
+          def reset_tmp():
+              shutil.rmtree(tmp, ignore_errors=True); os.makedirs(tmp, exist_ok=True)
+          reset_tmp()
+
+          def push(local, tgt):
+              if tgt in existing:
+                  print(f"SKIP (present): {tgt}"); return
+              gb = os.path.getsize(local)/(1024**3)
+              print(f"UPLOAD {tgt}  ({gb:.2f} GB)")
+              upload_file(path_or_fileobj=local, path_in_repo=tgt,
+                          repo_id=TARGET, repo_type="model",
+                          commit_message=f"Add {tgt}")
+
+          # ── 1. inswapper (single HF file) ──────────────────────────────
+          if "inswapper_128.onnx" not in existing:
+              p = hf_hub_download("ezioruan/inswapper_128.onnx",
+                                  "inswapper_128.onnx",
+                                  local_dir=tmp, local_dir_use_symlinks=False)
+              push(p, "inswapper_128.onnx"); reset_tmp()
+
+          # ── 2. BiRefNet (HF repo subset → birefnet/) ───────────────────
+          bire = ["config.json", "birefnet.py", "BiRefNet_config.py",
+                  "model.safetensors"]
+          if not all(f"birefnet/{f}" in existing for f in bire):
+              snap = snapshot_download("ZhengPeng7/BiRefNet",
+                                       allow_patterns=bire,
+                                       local_dir=tmp, local_dir_use_symlinks=False)
+              for f in bire:
+                  push(os.path.join(snap, f), f"birefnet/{f}")
+              reset_tmp()
+
+          # ── 3. GitHub-release files (urllib download → upload) ─────────
+          URLS = [
+              ("https://github.com/TencentARC/GFPGAN/releases/download/v1.3.0/GFPGANv1.4.pth",
+               "GFPGANv1.4.pth"),
+              ("https://github.com/xinntao/facexlib/releases/download/v0.1.0/detection_Resnet50_Final.pth",
+               "facexlib/detection_Resnet50_Final.pth"),
+              ("https://github.com/xinntao/facexlib/releases/download/v0.1.0/parsing_parsenet.pth",
+               "facexlib/parsing_parsenet.pth"),
+          ]
+          for url, tgt in URLS:
+              if tgt in existing: print(f"SKIP (present): {tgt}"); continue
+              dst = os.path.join(tmp, os.path.basename(tgt))
+              print(f"GET {url}")
+              urllib.request.urlretrieve(url, dst)
+              push(dst, tgt); reset_tmp()
+
+          # ── 4. buffalo_l (GitHub zip → extract *.onnx → buffalo_l/) ────
+          need_buffalo = not any(k.startswith("buffalo_l/") for k in existing)
+          if need_buffalo:
+              zp = os.path.join(tmp, "buffalo_l.zip")
+              print("GET buffalo_l.zip")
+              urllib.request.urlretrieve(
+                  "https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip", zp)
+              ex = os.path.join(tmp, "buffalo_l"); os.makedirs(ex, exist_ok=True)
+              zipfile.ZipFile(zp).extractall(ex)
+              for fn in sorted(os.listdir(ex)):
+                  if fn.endswith(".onnx"):
+                      push(os.path.join(ex, fn), f"buffalo_l/{fn}")
+              reset_tmp()
+
+          print("\nFinal target files:", sorted(list_repo_files(TARGET)))
+          print("DONE")
+          PY
