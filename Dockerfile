@@ -34,15 +34,9 @@ RUN P=$(ls -d /usr/local/lib/python*/site-packages/basicsr) && \
 # onnxruntime-gpu needs torch's bundled CUDA 12 libs on the loader path
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.12/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.12/site-packages/nvidia/curand/lib:/usr/local/lib/python3.12/site-packages/nvidia/cufft/lib
 
-# Models are NOT baked. They live in RunPod's HF Model Cache for
-# `techwavelaps/bgr-fswap-models` and are symlinked into place at boot by
-# link_models.sh (run from start.sh before the handler imports them). This
-# keeps the image ~6.5 GB instead of ~8.8 GB and speeds cold-start pulls.
-WORKDIR /
+# bake models into the image (no runtime download)
+COPY download_models.py /tmp/download_models.py
+RUN python /tmp/download_models.py && rm /tmp/download_models.py
 
-COPY link_models.sh /link_models.sh
-COPY start.sh /start.sh
 COPY handler.py /handler.py
-RUN chmod +x /link_models.sh /start.sh
-
-CMD ["/start.sh"]
+CMD ["python", "-u", "/handler.py"]

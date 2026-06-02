@@ -37,14 +37,10 @@ PROVIDERS = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 print(f"[init] device={DEV} loading models...", flush=True)
 _t0 = time.time()
 
-# BiRefNet (bg removal). Prefer the RunPod Model Cache copy (linked to
-# /models/birefnet by link_models.sh); fall back to the HF id when the image
-# bakes models in (so the same handler runs on cached + embedded builds).
-_BIREFNET_SRC = "/models/birefnet" if os.path.isdir("/models/birefnet") else "ZhengPeng7/BiRefNet"
-print(f"[init] BiRefNet source: {_BIREFNET_SRC}", flush=True)
+# BiRefNet (bg removal)
 _birefnet = (
     AutoModelForImageSegmentation
-    .from_pretrained(_BIREFNET_SRC, trust_remote_code=True)
+    .from_pretrained("ZhengPeng7/BiRefNet", trust_remote_code=True)
     .to(DEV).eval()
 )
 _birefnet = _birefnet.half() if HALF else _birefnet.float()
