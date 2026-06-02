@@ -1,6 +1,7 @@
 # RunPod serverless worker (NO ComfyUI): inswapper swap + GFPGAN restore + BiRefNet
 # bg-removal. Ports the Modal worker. Carries the hard-won fixes:
-#  - torch cu124 (onnxruntime-gpu 1.20 needs CUDA 12, not torch's default cu13)
+#  - torch cu128 + onnxruntime-gpu 1.22 (CUDA 12.8) → sm_75..sm_120, runs on every
+#    RunPod GPU incl. Blackwell (cu124/ort1.20 capped at sm_90 → unhealthy on Blackwell)
 #  - LD_LIBRARY_PATH -> torch's bundled nvidia libs so onnxruntime finds libcublasLt.so.12
 #  - basicsr functional_tensor patch on .py ONLY (+ delete stale .pyc), asserted
 FROM python:3.12-slim
@@ -8,14 +9,16 @@ FROM python:3.12-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git wget libgl1 libglib2.0-0 build-essential && rm -rf /var/lib/apt/lists/*
 
-# numpy + torch (CUDA 12.4 build) first
+# numpy + torch (CUDA 12.8 build) — cu128 ships kernels for sm_75..sm_120, so it
+# runs on EVERY RunPod serverless GPU incl. Blackwell (RTX PRO 6000 / B200, sm_120).
+# cu124 only had up to sm_90 → "no kernel image" + unhealthy worker on Blackwell.
 RUN pip install --no-cache-dir "numpy<2" torch torchvision \
-    --index-url https://download.pytorch.org/whl/cu124
+    --index-url https://download.pytorch.org/whl/cu128
 
 # insightface prebuilt wheel (no source compile) + GPU onnxruntime + the rest
 RUN pip install --no-cache-dir \
     https://huggingface.co/iwr-redmond/linux-wheels/resolve/main/insightface-0.7.3-cp312-cp312-linux_x86_64.whl \
-    onnxruntime-gpu==1.20.0 \
+    onnxruntime-gpu==1.22.0 \
     "transformers>=4.49" timm einops kornia safetensors huggingface_hub \
     opencv-python-headless pillow gfpgan runpod
 
