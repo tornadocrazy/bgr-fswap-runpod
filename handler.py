@@ -9,13 +9,13 @@ Input  (job["input"]):
   feather:     float, gaussian edge feather px (default 0.8)
   erode:       int, erode px to cut dark fringe (default 1)
   crop:        bool (default True). True = swap+restore on the upper face crop then
-               feather-stitch back (fast). False = swap+restore the FULL image (no
-               crop, no stitch → no stitch seam under the neck; a bit slower).
+               stitch back (fast). False = swap+restore the FULL image (no crop, no
+               stitch; a bit slower).
 Output:
   { "image": "<base64 png>", "format": "png", "had_alpha": bool }
 
 Pipeline (matches Modal): [crop upper-40%×centre-40%] -> inswapper swap -> GFPGAN
-restore -> [feathered stitch back] -> BiRefNet bg-removal (erode+feather edge clean).
+restore -> [stitch back] -> BiRefNet bg-removal (erode+feather edge clean).
 The bracketed crop/stitch steps are skipped when crop=False.
 """
 import os, io, base64, time
@@ -91,9 +91,8 @@ def _pil_to_b64(img):
 def _swap(target_pil, source_pil, crop=True):
     """Face-swap source onto target.
       crop=True  (default): swap+restore on the upper-40%×centre-40% face region for
-                 speed, then feather-blend it back (no hard seam under the neck).
-      crop=False: swap+restore on the FULL image — no crop, no stitch, so there is no
-                 stitch seam at all (a bit slower; GFPGAN touches the whole frame)."""
+                 speed, then stitch it back into the full image.
+      crop=False: swap+restore on the FULL image — no crop, no stitch."""
     src = cv2.cvtColor(np.array(source_pil), cv2.COLOR_RGB2BGR)
     sfs = _face.get(src)
     if not sfs:
@@ -128,26 +127,8 @@ def _swap(target_pil, source_pil, crop=True):
 
     full = cv2.cvtColor(np.array(target_pil), cv2.COLOR_RGB2BGR)
     rh, rw = res.shape[:2]
-    # res covers the whole frame (crop disabled, or crop fell back to full) → return as-is
-    if x0 == 0 and y0 == 0 and rh == full.shape[0] and rw == full.shape[1]:
-        return Image.fromarray(cv2.cvtColor(res, cv2.COLOR_BGR2RGB))
-
-    # Stitch the restored crop back with a FEATHERED blend (not a hard paste) so the
-    # crop edges — especially the bottom edge under the neck — don't leave a visible
-    # seam where GFPGAN's tone shift meets the untouched image.
-    full = full.astype(np.float32)
-    fb = max(1, int(0.06 * min(rh, rw)))  # feather width
-    ramp = np.linspace(0.0, 1.0, fb, dtype=np.float32)
-    ay = np.ones(rh, np.float32)
-    ax = np.ones(rw, np.float32)
-    if y0 > 0:                      ay[:fb] = ramp        # top (only if interior)
-    if y0 + rh < full.shape[0]:     ay[-fb:] = ramp[::-1] # bottom (the neck seam)
-    if x0 > 0:                      ax[:fb] = ramp        # left
-    if x0 + rw < full.shape[1]:     ax[-fb:] = ramp[::-1] # right
-    alpha = np.outer(ay, ax)[..., None]
-    region = full[y0:y0 + rh, x0:x0 + rw]
-    full[y0:y0 + rh, x0:x0 + rw] = res.astype(np.float32) * alpha + region * (1.0 - alpha)
-    return Image.fromarray(cv2.cvtColor(full.astype(np.uint8), cv2.COLOR_BGR2RGB))
+    full[y0:y0 + rh, x0:x0 + rw] = res
+    return Image.fromarray(cv2.cvtColor(full, cv2.COLOR_BGR2RGB))
 
 
 def _bgremove(pil, feather=0.8, erode=1):
