@@ -11,6 +11,9 @@ Input  (job["input"]):
   crop:        bool (default True). True = swap+restore on the upper face crop then
                stitch back (fast). False = swap+restore the FULL image (no crop, no
                stitch; a bit slower).
+  largest_only: bool (default False). False = swap EVERY detected face (long-standing
+               behaviour, unchanged). True = swap only the largest detected face, so
+               other people in frame keep their own.
 Output:
   { "image": "<base64 png>", "format": "png", "had_alpha": bool }
 
@@ -88,11 +91,13 @@ def _pil_to_b64(img):
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def _swap(target_pil, source_pil, crop=True):
+def _swap(target_pil, source_pil, crop=True, largest_only=False):
     """Face-swap source onto target.
       crop=True  (default): swap+restore on the upper-40%×centre-40% face region for
                  speed, then stitch it back into the full image.
-      crop=False: swap+restore on the FULL image — no crop, no stitch."""
+      crop=False: swap+restore on the FULL image — no crop, no stitch.
+      largest_only=True: swap only the largest detected face — see below. Default False
+                 keeps the long-standing swap-every-face behaviour."""
     src = cv2.cvtColor(np.array(source_pil), cv2.COLOR_RGB2BGR)
     sfs = _face.get(src)
     if not sfs:
@@ -116,6 +121,25 @@ def _swap(target_pil, source_pil, crop=True):
     if not tfs:
         raise ValueError("no face detected in target image")
 
+    # Opt-in: swap ONE face, the largest.
+    #
+    # Swapping every detected face is fine for a booth portrait of one person and wrong
+    # the moment anyone else is in frame — the generated scene comes back with the
+    # customer's face on the friend beside them, the child in front, the wrestler in the
+    # background. A row of identical faces is worse than no swap at all.
+    #
+    # Off by default all the same. This endpoint is shared by several live campaigns and
+    # silently changing what they get back is not worth the fix; the caller that has the
+    # problem asks for it. Single-face frames are identical either way.
+    #
+    # Largest-by-bbox-area is the same rule already used to pick the SOURCE face a few
+    # lines up, and it holds for the same reason: the subject of a generated portrait is
+    # the one closest to camera. It relies on the caller's prompt keeping the subject in
+    # the foreground — a companion rendered nearer than the subject would win.
+    n_detected = len(tfs)
+    if largest_only:
+        tfs = [max(tfs, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))]
+
     t = time.time()
     res = region
     for f in tfs:
@@ -123,7 +147,8 @@ def _swap(target_pil, source_pil, crop=True):
     t_swap = time.time() - t
     t = time.time()
     _, _, res = _restorer.enhance(res, has_aligned=False, only_center_face=False, paste_back=True)
-    print(f"[time] swap={t_swap*1000:.0f}ms restore={(time.time()-t)*1000:.0f}ms crop={crop}", flush=True)
+    print(f"[time] swap={t_swap*1000:.0f}ms restore={(time.time()-t)*1000:.0f}ms crop={crop} "
+          f"faces={len(tfs)}/{n_detected}", flush=True)
 
     full = cv2.cvtColor(np.array(target_pil), cv2.COLOR_RGB2BGR)
     rh, rw = res.shape[:2]
@@ -174,7 +199,8 @@ def handler(job):
             if "source_face" not in inp:
                 return {"error": "op requires 'source_face' (base64)"}
             crop = bool(inp.get("crop", True))  # False → swap full image (no stitch seam)
-            img = _swap(img, _b64_to_pil(inp["source_face"]), crop=crop)
+            largest_only = bool(inp.get("largest_only", False))  # True → others keep their own face
+            img = _swap(img, _b64_to_pil(inp["source_face"]), crop=crop, largest_only=largest_only)
 
         had_alpha = False
         if op in ("bgremove", "both"):

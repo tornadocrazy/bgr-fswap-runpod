@@ -11,6 +11,12 @@ background removal** with the crop-swap-stitch + erode/feather edge-clean optimi
 ```
 `op`: `both` (default) | `faceswap` | `bgremove`. Returns `{ "image": "<b64 png>", "had_alpha": true }`.
 
+`largest_only`: `false` (default) swaps **every** detected face — long-standing behaviour,
+unchanged. Set `true` to swap **only the largest**, so anyone else in the frame keeps their
+own face. Off by default because this endpoint is shared by several live campaigns; the
+caller that needs it opts in. Largest-by-area assumes the caller's prompt keeps the subject
+nearest the camera — a companion rendered closer than the subject would win instead.
+
 ## Pipeline
 crop (upper40%×centre40%) → inswapper swap → GFPGAN restore → stitch → BiRefNet bg-removal
 (erode+feather edge clean). Models baked into the image; no runtime downloads.
